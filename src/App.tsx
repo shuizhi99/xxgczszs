@@ -128,7 +128,6 @@ const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [conversationId, setConversationId] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
 
@@ -150,58 +149,87 @@ const App: React.FC = () => {
   }, []);
 
   // 发送消息处理
-  const handleSend = async () => {
-    if (!inputMessage.trim() || isLoading) return;
+  const handleSendMessage = async () => {
+    if (!inputMessage.trim()) return;
 
-    // 添加用户消息
-    const newMessage: Message = { role: 'user', content: inputMessage };
-    setMessages(prev => [...prev, newMessage]);
+    const userMessage = inputMessage.trim();
     setInputMessage('');
+    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
 
     try {
       const response = await fetch(CONFIG.API_URL, {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${CONFIG.API_KEY}`,
           'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'Authorization': `Bearer ${CONFIG.API_KEY}`,
           'X-Session-Token': sessionToken || ''
         },
         body: JSON.stringify({
           bot_id: CONFIG.BOT_ID,
           user_id: CONFIG.USER_ID,
-          stream: true,
-          auto_save_history: true,
-          conversation_id: conversationId,
-          additional_messages: [{
-            role: "user",
-            content: inputMessage,
-            content_type: "text"
-          }],
-          query: inputMessage
+          query: userMessage,
+          stream: true
         }),
-        credentials: 'include' // 允许跨域请求携带 Cookie
+        credentials: 'include'
       });
 
       if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
+        throw new Error('请求失败');
       }
 
-      const responseData = await response.json();
-
-      // 如果响应中包含新的会话令牌，保存它
-      if (responseData.session_token) {
-        setSessionToken(responseData.session_token);
-        CookieUtils.setCookie('session_token', responseData.session_token);
+      const reader = response.body?.getReader();
+      if (!reader) {
+        throw new Error('无法读取响应流');
       }
+
+      let currentMessage = '';
+      const updateMessage = (content: string) => {
+        setMessages(prev => {
+          const newMessages = [...prev];
+          const lastMessage = newMessages[newMessages.length - 1];
+          if (lastMessage.role === 'assistant') {
+            lastMessage.content = content;
+          } else {
+            newMessages.push({ role: 'assistant', content });
+          }
+          return newMessages;
+        });
+      };
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = new TextDecoder().decode(value);
+        const lines = chunk.split('\n');
+
+        for (const line of lines) {
+          if (line.startsWith('data:')) {
+            try {
+              const data = JSON.parse(line.slice(5));
+              if (data.type === 'answer' && data.content_type === 'text') {
+                currentMessage += data.content;
+                updateMessage(currentMessage);
+              }
+              // 保存会话令牌
+              if (data.session_token) {
+                setSessionToken(data.session_token);
+                CookieUtils.setCookie('session_token', data.session_token);
+              }
+            } catch (e) {
+              console.error('解析响应数据失败:', e);
+            }
+          }
+        }
+      }
+
+      setIsLoading(false);
     } catch (error) {
-      console.error('Error:', error);
+      console.error('发送消息失败:', error);
       setMessages(prev => [...prev, {
         role: 'system',
-        content: `请求失败: ${(error as Error).message}`
+        content: '抱歉，发生错误，请稍后重试。'
       }]);
       setIsLoading(false);
     }
@@ -244,7 +272,7 @@ const App: React.FC = () => {
           }}
           value={inputMessage}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInputMessage(e.target.value)}
-          onKeyPress={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleSend()}
+          onKeyPress={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleSendMessage()}
           placeholder="输入关于招生的问题..."
           disabled={isLoading}
         />
@@ -254,7 +282,7 @@ const App: React.FC = () => {
             backgroundColor: isLoading ? '#6c757d' : '#1a73e8',
             transform: isLoading ? 'scale(0.98)' : 'scale(1)'
           }}
-          onClick={handleSend}
+          onClick={handleSendMessage}
           disabled={isLoading}
         >
           {isLoading ? '发送中...' : '发送'}
