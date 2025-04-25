@@ -128,16 +128,48 @@ const App: React.FC = () => {
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
-  const chatEndRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const messageCache = useRef<Map<string, string>>(new Map());
+  const debounceTimer = useRef<NodeJS.Timeout>();
 
   // 自动滚动到底部
   useEffect(() => {
-    if (chatEndRef.current) {
+    if (messagesEndRef.current) {
       setTimeout(() => {
-        chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
       }, 100);
     }
   }, [messages]);
+
+  // 防抖处理输入
+  const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (debounceTimer.current) {
+      clearTimeout(debounceTimer.current);
+    }
+    debounceTimer.current = setTimeout(() => {
+      setInputMessage(e.target.value);
+    }, 300);
+  };
+
+  // 使用缓存更新消息
+  const updateMessage = (content: string) => {
+    const cacheKey = `${conversationId}-${messages.length}`;
+    messageCache.current.set(cacheKey, content);
+    
+    setMessages(prev => {
+      const newMessages = [...prev];
+      const lastMessage = newMessages[newMessages.length - 1];
+      if (lastMessage.role === 'assistant') {
+        lastMessage.content = content;
+      } else {
+        newMessages.push({
+          role: 'assistant',
+          content: content
+        });
+      }
+      return newMessages;
+    });
+  };
 
   // 发送消息处理
   const handleSend = async () => {
@@ -149,85 +181,95 @@ const App: React.FC = () => {
     setInputMessage('');
     setIsLoading(true);
 
-    try {
-      const response = await fetch(CONFIG.API_URL, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${CONFIG.API_KEY}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          bot_id: CONFIG.BOT_ID,
-          user_id: CONFIG.USER_ID,
-          stream: true,
-          auto_save_history: true,
-          conversation_id: conversationId,
-          additional_messages: [{
-            role: "user",
-            content: inputMessage,
-            content_type: "text"
-          }]
-        })
-      });
+    const maxRetries = 3;
+    let retryCount = 0;
 
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
+    const fetchWithTimeout = async (timeout = 10000) => {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeout);
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No reader available');
-      }
-
-      let currentMessage = '';
-      const updateMessage = (content: string) => {
-        setMessages(prev => {
-          const newMessages = [...prev];
-          const lastMessage = newMessages[newMessages.length - 1];
-          if (lastMessage.role === 'assistant') {
-            lastMessage.content = content;
-          } else {
-            newMessages.push({
-              role: 'assistant',
-              content: content
-            });
-          }
-          return newMessages;
+      try {
+        const response = await fetch(CONFIG.API_URL, {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${CONFIG.API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            bot_id: CONFIG.BOT_ID,
+            user_id: CONFIG.USER_ID,
+            stream: true,
+            auto_save_history: true,
+            conversation_id: conversationId,
+            additional_messages: [{
+              role: "user",
+              content: inputMessage,
+              content_type: "text"
+            }]
+          }),
+          signal: controller.signal
         });
-      };
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        clearTimeout(timeoutId);
+        return response;
+      } catch (error) {
+        clearTimeout(timeoutId);
+        throw error;
+      }
+    };
 
-        const chunk = new TextDecoder().decode(value);
-        const lines = chunk.split('\n');
+    while (retryCount < maxRetries) {
+      try {
+        const response = await fetchWithTimeout();
+        
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
 
-        for (const line of lines) {
-          if (line.startsWith('data:')) {
-            try {
-              const data = JSON.parse(line.slice(5));
-              if (data.type === 'answer' && data.content_type === 'text') {
-                currentMessage += data.content;
-                updateMessage(currentMessage);
+        const reader = response.body?.getReader();
+        if (!reader) {
+          throw new Error('No reader available');
+        }
+
+        let currentMessage = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const chunk = new TextDecoder().decode(value);
+          const lines = chunk.split('\n');
+
+          for (const line of lines) {
+            if (line.startsWith('data:')) {
+              try {
+                const data = JSON.parse(line.slice(5));
+                if (data.type === 'answer' && data.content_type === 'text') {
+                  currentMessage += data.content;
+                  updateMessage(currentMessage);
+                }
+              } catch (e) {
+                console.error('Error parsing stream data:', e);
               }
-            } catch (e) {
-              console.error('Error parsing stream data:', e);
             }
           }
         }
-      }
 
-      setIsLoading(false);
-      setConversationId(null);
-    } catch (error) {
-      console.error('Error:', error);
-      setMessages(prev => [...prev, {
-        role: 'system',
-        content: `请求失败: ${(error as Error).message}`
-      }]);
-      setIsLoading(false);
+        setIsLoading(false);
+        setConversationId(null);
+        return;
+      } catch (error) {
+        console.error(`Retry ${retryCount + 1} failed:`, error);
+        retryCount++;
+      }
     }
+
+    console.error('All retries failed');
+    setMessages(prev => [...prev, {
+      role: 'system',
+      content: '请求失败，请稍后再试'
+    }]);
+    setIsLoading(false);
   };
 
   return (
@@ -256,7 +298,7 @@ const App: React.FC = () => {
             正在思考中<span style={styles.loadingDots}>...</span>
           </div>
         )}
-        <div ref={chatEndRef} />
+        <div ref={messagesEndRef} />
       </div>
       
       <div style={styles.inputContainer}>
@@ -266,7 +308,7 @@ const App: React.FC = () => {
             borderColor: inputMessage ? '#1a73e8' : '#e0e0e0'
           }}
           value={inputMessage}
-          onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInputMessage(e.target.value)}
+          onChange={handleInputChange}
           onKeyPress={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleSend()}
           placeholder="输入关于招生的问题..."
           disabled={isLoading}
