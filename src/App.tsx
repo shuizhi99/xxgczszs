@@ -130,6 +130,7 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const [sessionToken, setSessionToken] = useState<string | null>(null);
+  const [conversationId, setConversationId] = useState<string | null>(null);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -149,38 +150,48 @@ const App: React.FC = () => {
   }, []);
 
   // 发送消息处理
-  const handleSendMessage = async () => {
-    if (!inputMessage.trim()) return;
+  const handleSend = async () => {
+    if (!inputMessage.trim() || isLoading) return;
 
-    const userMessage = inputMessage.trim();
+    // 添加用户消息
+    const newMessage: Message = { role: 'user', content: inputMessage };
+    setMessages(prev => [...prev, newMessage]);
     setInputMessage('');
-    setMessages(prev => [...prev, { role: 'user', content: userMessage }]);
     setIsLoading(true);
 
     try {
       const response = await fetch(CONFIG.API_URL, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           'Authorization': `Bearer ${CONFIG.API_KEY}`,
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
           'X-Session-Token': sessionToken || ''
         },
         body: JSON.stringify({
           bot_id: CONFIG.BOT_ID,
           user_id: CONFIG.USER_ID,
-          query: userMessage,
-          stream: true
-        }),
-        credentials: 'include'
+          stream: true,
+          auto_save_history: true,
+          conversation_id: conversationId,
+          additional_messages: [{
+            role: "user",
+            content: inputMessage,
+            content_type: "text"
+          }],
+          query: inputMessage
+        })
       });
 
       if (!response.ok) {
-        throw new Error('请求失败');
+        throw new Error(`HTTP error! status: ${response.status}`);
       }
 
       const reader = response.body?.getReader();
       if (!reader) {
-        throw new Error('无法读取响应流');
+        throw new Error('No reader available');
       }
 
       let currentMessage = '';
@@ -191,7 +202,10 @@ const App: React.FC = () => {
           if (lastMessage.role === 'assistant') {
             lastMessage.content = content;
           } else {
-            newMessages.push({ role: 'assistant', content });
+            newMessages.push({
+              role: 'assistant',
+              content: content
+            });
           }
           return newMessages;
         });
@@ -218,18 +232,19 @@ const App: React.FC = () => {
                 CookieUtils.setCookie('session_token', data.session_token);
               }
             } catch (e) {
-              console.error('解析响应数据失败:', e);
+              console.error('Error parsing stream data:', e);
             }
           }
         }
       }
 
       setIsLoading(false);
+      setConversationId(null);
     } catch (error) {
-      console.error('发送消息失败:', error);
+      console.error('Error:', error);
       setMessages(prev => [...prev, {
         role: 'system',
-        content: '抱歉，发生错误，请稍后重试。'
+        content: `请求失败: ${(error as Error).message}`
       }]);
       setIsLoading(false);
     }
@@ -272,7 +287,7 @@ const App: React.FC = () => {
           }}
           value={inputMessage}
           onChange={(e: React.ChangeEvent<HTMLInputElement>) => setInputMessage(e.target.value)}
-          onKeyPress={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleSendMessage()}
+          onKeyPress={(e: React.KeyboardEvent<HTMLInputElement>) => e.key === 'Enter' && handleSend()}
           placeholder="输入关于招生的问题..."
           disabled={isLoading}
         />
@@ -282,7 +297,7 @@ const App: React.FC = () => {
             backgroundColor: isLoading ? '#6c757d' : '#1a73e8',
             transform: isLoading ? 'scale(0.98)' : 'scale(1)'
           }}
-          onClick={handleSendMessage}
+          onClick={handleSend}
           disabled={isLoading}
         >
           {isLoading ? '发送中...' : '发送'}
