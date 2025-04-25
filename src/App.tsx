@@ -1,7 +1,6 @@
 // src/App.tsx
 
 import React, { useState, useRef, useEffect, CSSProperties } from 'react';
-import { CookieUtils } from './utils/cookieUtils';
 
 // ================= 配置区域 (需要修改部分) ================= //
 interface AppConfig {
@@ -128,9 +127,8 @@ const App: React.FC = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const chatEndRef = useRef<HTMLDivElement>(null);
-  const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [conversationId, setConversationId] = useState<string | null>(null);
+  const chatEndRef = useRef<HTMLDivElement>(null);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -140,14 +138,6 @@ const App: React.FC = () => {
       }, 100);
     }
   }, [messages]);
-
-  useEffect(() => {
-    // 初始化时检查是否有已存在的会话令牌
-    const savedToken = CookieUtils.getCookie('session_token');
-    if (savedToken) {
-      setSessionToken(savedToken);
-    }
-  }, []);
 
   // 发送消息处理
   const handleSend = async () => {
@@ -164,11 +154,7 @@ const App: React.FC = () => {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${CONFIG.API_KEY}`,
-          'Content-Type': 'application/json',
-          'Access-Control-Allow-Origin': '*',
-          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-          'X-Session-Token': sessionToken || ''
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           bot_id: CONFIG.BOT_ID,
@@ -180,8 +166,7 @@ const App: React.FC = () => {
             role: "user",
             content: inputMessage,
             content_type: "text"
-          }],
-          query: inputMessage
+          }]
         })
       });
 
@@ -225,11 +210,6 @@ const App: React.FC = () => {
               if (data.type === 'answer' && data.content_type === 'text') {
                 currentMessage += data.content;
                 updateMessage(currentMessage);
-              }
-              // 保存会话令牌
-              if (data.session_token) {
-                setSessionToken(data.session_token);
-                CookieUtils.setCookie('session_token', data.session_token);
               }
             } catch (e) {
               console.error('Error parsing stream data:', e);
