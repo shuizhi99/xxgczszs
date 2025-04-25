@@ -1,0 +1,22 @@
+image: node:latest
+
+cache:
+  key: $CI_COMMIT_REF_SLUG
+  paths:
+    - node_modules/
+
+pages:
+  stage: deploy
+  script:
+    - npm install
+    - npm run build
+    - mkdir -p public
+    - cp -r build/* public/
+  artifacts:
+    paths:
+      - public
+  rules:
+    - if: $CI_COMMIT_BRANCH == "master"
+  environment:
+    name: production
+    url: https://$CI_PROJECT_PATH.gitlab.nianhuaci.cn
