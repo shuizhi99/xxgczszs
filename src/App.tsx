@@ -1,6 +1,7 @@
 // src/App.tsx
 
 import React, { useState, useRef, useEffect, CSSProperties } from 'react';
+import { CookieUtils } from './utils/cookieUtils';
 
 // ================= 配置区域 (需要修改部分) ================= //
 interface AppConfig {
@@ -129,6 +130,7 @@ const App: React.FC = () => {
   const [isLoading, setIsLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  const [sessionToken, setSessionToken] = useState<string | null>(null);
 
   // 自动滚动到底部
   useEffect(() => {
@@ -138,6 +140,14 @@ const App: React.FC = () => {
       }, 100);
     }
   }, [messages]);
+
+  useEffect(() => {
+    // 初始化时检查是否有已存在的会话令牌
+    const savedToken = CookieUtils.getCookie('session_token');
+    if (savedToken) {
+      setSessionToken(savedToken);
+    }
+  }, []);
 
   // 发送消息处理
   const handleSend = async () => {
@@ -157,7 +167,8 @@ const App: React.FC = () => {
           'Content-Type': 'application/json',
           'Access-Control-Allow-Origin': '*',
           'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-          'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+          'X-Session-Token': sessionToken || ''
         },
         body: JSON.stringify({
           bot_id: CONFIG.BOT_ID,
@@ -169,60 +180,23 @@ const App: React.FC = () => {
             role: "user",
             content: inputMessage,
             content_type: "text"
-          }]
-        })
+          }],
+          query: inputMessage
+        }),
+        credentials: 'include' // 允许跨域请求携带 Cookie
       });
 
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
-      const reader = response.body?.getReader();
-      if (!reader) {
-        throw new Error('No reader available');
+      const responseData = await response.json();
+
+      // 如果响应中包含新的会话令牌，保存它
+      if (responseData.session_token) {
+        setSessionToken(responseData.session_token);
+        CookieUtils.setCookie('session_token', responseData.session_token);
       }
-
-      let currentMessage = '';
-      const updateMessage = (content: string) => {
-        setMessages(prev => {
-          const newMessages = [...prev];
-          const lastMessage = newMessages[newMessages.length - 1];
-          if (lastMessage.role === 'assistant') {
-            lastMessage.content = content;
-          } else {
-            newMessages.push({
-              role: 'assistant',
-              content: content
-            });
-          }
-          return newMessages;
-        });
-      };
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = new TextDecoder().decode(value);
-        const lines = chunk.split('\n');
-
-        for (const line of lines) {
-          if (line.startsWith('data:')) {
-            try {
-              const data = JSON.parse(line.slice(5));
-              if (data.type === 'answer' && data.content_type === 'text') {
-                currentMessage += data.content;
-                updateMessage(currentMessage);
-              }
-            } catch (e) {
-              console.error('Error parsing stream data:', e);
-            }
-          }
-        }
-      }
-
-      setIsLoading(false);
-      setConversationId(null);
     } catch (error) {
       console.error('Error:', error);
       setMessages(prev => [...prev, {
