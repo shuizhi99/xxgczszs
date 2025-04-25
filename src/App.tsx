@@ -154,7 +154,10 @@ const App: React.FC = () => {
         method: 'POST',
         headers: {
           'Authorization': `Bearer ${CONFIG.API_KEY}`,
-          'Content-Type': 'application/json'
+          'Content-Type': 'application/json',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+          'Access-Control-Allow-Headers': 'Content-Type, Authorization'
         },
         body: JSON.stringify({
           bot_id: CONFIG.BOT_ID,
